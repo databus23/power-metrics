@@ -24,12 +24,13 @@ var (
 		Name: "power_meter_ticks_total",
 		Help: "Number of ticks",
 	})
+	registry = prometheus.NewRegistry()
 )
 
 func init() {
 	// Register the summary and the histogram with Prometheus's default registry.
-	prometheus.MustRegister(tickTime)
-	prometheus.MustRegister(tickCounter)
+	registry.MustRegister(tickTime)
+	registry.MustRegister(tickCounter)
 }
 
 func main() {
@@ -56,7 +57,7 @@ func main() {
 }
 
 func httpServer(c *cli.Context) error {
-	http.Handle("/metrics", promhttp.Handler())
+	http.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
 	log.Printf("Serving /metrics on %s", c.GlobalString("listen-address"))
 	return http.ListenAndServe(c.GlobalString("listen-address"), nil)
 }
