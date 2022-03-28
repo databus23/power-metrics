@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jacobsa/go-serial/serial"
 	"github.com/prometheus/client_golang/prometheus"
@@ -18,7 +19,7 @@ import (
 var (
 	tickTime = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "power_meter_tick_time",
-		Help: "Time in milliseconds between two ticks ",
+		Help: "Time in milliseconds between two ticks",
 	})
 	tickCounter = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "power_meter_ticks_total",
@@ -86,10 +87,10 @@ func run(c *cli.Context) error {
 			tickTime.Set(millisSinceLastTick)
 		}
 		tickCounter.Inc()
-		fmt.Println(scanner.Text())
+		log.Printf("tick time: %v, counter: %s", time.Duration(int64(millisSinceLastTick))*time.Millisecond, vals[1])
 	}
 	if err := scanner.Err(); err != nil {
-		fmt.Fprintln(os.Stderr, "reading standard input:", err)
+		log.Println(os.Stderr, "reading standard input: ", err)
 	}
 
 	return nil
