@@ -1,5 +1,5 @@
 IMAGE:=databus23/power-metrics
-VERSION:=0.2
+VERSION:=0.3.0
 
 .PHONY: build
 

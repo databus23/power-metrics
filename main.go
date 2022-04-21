@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jacobsa/go-serial/serial"
@@ -17,22 +19,8 @@ import (
 )
 
 var (
-	tickTime = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "power_meter_tick_time",
-		Help: "Time in milliseconds between two ticks",
-	})
-	tickCounter = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "power_meter_ticks_total",
-		Help: "Number of ticks",
-	})
 	registry = prometheus.NewRegistry()
 )
-
-func init() {
-	// Register the summary and the histogram with Prometheus's default registry.
-	registry.MustRegister(tickTime)
-	registry.MustRegister(tickCounter)
-}
 
 func main() {
 	app := cli.NewApp()
@@ -50,7 +38,9 @@ func main() {
 	}
 	app.Name = "electricity-metrics"
 	app.Action = func(c *cli.Context) error {
-		go run(c)
+		cl := NewCollector()
+		registry.Register(cl)
+		go cl.Run(c.GlobalString("serial-port"))
 		return httpServer(c)
 	}
 
@@ -63,31 +53,41 @@ func httpServer(c *cli.Context) error {
 	return http.ListenAndServe(c.GlobalString("listen-address"), nil)
 }
 
-func run(c *cli.Context) error {
+func NewCollector() *collector {
+	return &collector{
+		ticksTimeDesc:    prometheus.NewDesc("power_meter_tick_time", "Time in milliseconds between two ticks", nil, nil),
+		ticksCounterDesc: prometheus.NewDesc("power_meter_ticks_total", "Number of ticks", nil, nil),
+	}
+}
+
+type collector struct {
+	ticksCounterDesc *prometheus.Desc
+	ticksTimeDesc    *prometheus.Desc
+
+	ticksCounter        int64
+	millisSinceLastTick float64
+	lastTickTime        time.Time
+
+	mu sync.Mutex
+}
+
+func (c *collector) Run(portName string) error {
 	options := serial.OpenOptions{
-		PortName:        c.GlobalString("serial-port"),
+		PortName:        portName,
 		BaudRate:        57600,
 		DataBits:        8,
 		StopBits:        1,
 		MinimumReadSize: 1,
 	}
 	// Open the port.
-	log.Printf("Opening %s", c.GlobalString("serial-port"))
+	log.Printf("Opening %s", options.PortName)
 	port, err := serial.Open(options)
 	if err != nil {
 		return fmt.Errorf("serial.Open: %v", err)
 	}
 	scanner := bufio.NewScanner(port)
 	for scanner.Scan() {
-		vals := strings.Split(scanner.Text(), "\t")
-		millisSinceLastTick, err := strconv.ParseFloat(vals[0], 64)
-		if err != nil {
-			log.Printf("Error parsing float: %s", err)
-		} else {
-			tickTime.Set(millisSinceLastTick)
-		}
-		tickCounter.Inc()
-		log.Printf("tick time: %v, counter: %s", time.Duration(int64(millisSinceLastTick))*time.Millisecond, vals[1])
+		c.processTick(scanner.Text())
 	}
 	if err := scanner.Err(); err != nil {
 		log.Println(os.Stderr, "reading standard input: ", err)
@@ -95,4 +95,44 @@ func run(c *cli.Context) error {
 
 	return nil
 
+}
+func (c *collector) processTick(data string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.lastTickTime = time.Now()
+	vals := strings.Split(data, "\t")
+	millisSinceLastTick, err := strconv.ParseFloat(vals[0], 64)
+	if err != nil {
+		log.Printf("Error parsing float: %s", err)
+	} else {
+		c.millisSinceLastTick = millisSinceLastTick
+	}
+	c.ticksCounter++
+	log.Printf("tick time: %v, counter: %s", time.Duration(int64(millisSinceLastTick))*time.Millisecond, vals[1])
+
+}
+
+func (c *collector) Describe(d chan<- *prometheus.Desc) {
+	d <- c.ticksCounterDesc
+	d <- c.ticksTimeDesc
+}
+
+func (c *collector) Collect(m chan<- prometheus.Metric) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.millisSinceLastTick > 0 {
+		val := c.millisSinceLastTick
+		val = math.Max(val, float64(time.Since(c.lastTickTime).Milliseconds()))
+		m <- prometheus.MustNewConstMetric(
+			c.ticksTimeDesc,
+			prometheus.GaugeValue,
+			val,
+		)
+	}
+
+	m <- prometheus.MustNewConstMetric(
+		c.ticksCounterDesc,
+		prometheus.CounterValue,
+		float64(c.ticksCounter),
+	)
 }
